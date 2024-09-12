@@ -29,9 +29,14 @@ class WeatherData:
         self.calculate_wind_speed()
         self.dataset = self.dataset.sortby('latitude')
 
+        self.min_value = self.dataset.wspd.min().item()
+        self.max_value = self.dataset.wspd.max().item()
+        
+
         if auto:
             self.window_dataset()
-            self.split_data()        
+            self.split_data()    
+            self.normalize_data()    
     
     def subset_data(self, coarsen = 1):
         if coarsen > 1:
@@ -56,7 +61,7 @@ class WeatherData:
         # Preallocate arrays for better performance
         features = np.empty((total_windows, self.window_size, self.dataset.sizes['latitude'], self.dataset.sizes['longitude']), dtype=np.float32)
         targets = np.empty((total_windows,  self.steps, self.dataset.sizes['latitude'], self.dataset.sizes['longitude']), dtype=np.float32)
-        forcings = np.empty((total_windows, 2), dtype=np.int32)
+        forcings = np.empty((total_windows, self.window_size, 2), dtype=np.int32)
         time_values = np.empty((total_windows, self.window_size), dtype='datetime64[ns]')
 
         # Slice the dataset for all the time values at once
@@ -98,11 +103,20 @@ class WeatherData:
         
         self.X_train, self.y_train, self.F_train, self.T_train = shuffle(self.X_train, self.y_train, self.F_train, self.T_train, random_state=random_state)
 
+    def normalize_data(self):
+        self.X_train = (self.X_train - self.min_value) / (self.max_value - self.min_value)
+        self.y_train = (self.y_train - self.min_value) / (self.max_value - self.min_value)
+        self.X_test = (self.X_test - self.min_value) / (self.max_value - self.min_value)
+        self.y_test = (self.y_test - self.min_value) / (self.max_value - self.min_value)
+
     def plot_from_ds(self, seed = 0, frame_rate=16, levels =10):
         bounds = [self.dataset.longitude.min().item(), self.dataset.longitude.max().item(), self.dataset.latitude.min().item(), self.dataset.latitude.max().item()]
         features = self.features[seed]
         targets = self.targets[seed]
         time_values = self.time_values
+
+        features = features * (self.max_value - self.min_value) + self.min_value
+        targets = targets * (self.max_value - self.min_value) + self.min_value
 
         fig, axs = plt.subplots(1, 2, figsize=(21, 7), subplot_kw={'projection': ccrs.PlateCarree()})
 
@@ -159,6 +173,9 @@ class WeatherData:
         targets = self.y_test[seed:seed+1]
         time_values = self.time_values
 
+        features = features * (self.max_value - self.min_value) + self.min_value
+        targets = targets * (self.max_value - self.min_value) + self.min_value
+
         fig, axs = plt.subplots(1, 2, figsize=(21, 7), subplot_kw={'projection': ccrs.PlateCarree()})
 
         vmin = min(features.min().item(), targets.min().item())
@@ -207,9 +224,6 @@ class WeatherData:
         plt.close(fig)
 
         return HTML(ani.to_jshtml())
-
-    def return_data(self):
-        return self.X_train, self.X_test, self.y_train, self.y_test, self.F_train, self.F_test, self.T_train, self.T_test
 
 class WeatherMLModel(WeatherData):
     def __init__(self, ds=None, window_size=3, steps=3):
@@ -262,15 +276,16 @@ class WeatherMLModel(WeatherData):
 
         print(self.model.predict([self.X_train_tensor[0:1], self.F_train_tensor[0:1]]).shape)
     
-    def train_model(self, patience=10, best_model_name=None, max_epochs=100, val_split = 0.8, return_history=False):
+    def train_single(self, patience=10, best_model_name=None, max_epochs=100, val_split = 0.8, return_history=False):
         """
         Trains the machine learning model.
         """
         if best_model_name is None:
             current_time = datetime.now()
-            formatted_time = current_time.strftime('%m_%d_%M')
+            formatted_time = current_time.strftime('%m_%d_%H_%M')
 
-            best_model_name = f'{formatted_time}.h5'
+            best_model_name = f'models/{formatted_time}.h5'
+            
         early_stopping = tf.keras.callbacks.EarlyStopping(monitor='val_loss',
                                                     patience=patience,
                                                     mode='min', verbose=1)
@@ -290,17 +305,57 @@ class WeatherMLModel(WeatherData):
         print('Compiled...')
 
         if val_split != 0:
-            split = int(self.X_train.shape[0] * val_split)
+            split = int(self.X_train_tensor.shape[0] * val_split)
 
-            history = self.model.fit([self.X_train[:split], self.F_train[:split]], self.y_train[:split], epochs=max_epochs,
-                        validation_data=([self.X_train[split:], self.F_train[split:]], self.y_train[split:]),
+            history = self.model.fit([self.X_train_tensor[:split], self.F_train_tensor[:split]], self.y_train_tensor[:split], epochs=max_epochs,
+                        validation_data=([self.X_train_tensor[split:], self.F_train_tensor[split:]], self.y_train_tensor[split:]),
                         callbacks=[early_stopping, model_checkpoint])
         else:
-            history = self.model.fit([self.X_train, self.F_train], self.y_train, epochs=max_epochs,
+            history = self.model.fit([self.X_train_tensor, self.F_train_tensor], self.y_train_tensor, epochs=max_epochs,
                         callbacks=[early_stopping, model_checkpoint])
             
         if return_history:
             return history
+
+    def train_rollout(self, patience=10, best_model_name=None, max_epochs=100, val_split = 0.8, return_history=False):
+        optimizer = tf.keras.optimizers.Adam()
+
+        prediction_history = []
+
+        for i in range(max_epochs):
+            initial_input = self.X_train_tensor[i:i+1]
+        
+
+        # Training loop
+        for iteration in range(self.steps):
+            with tf.GradientTape() as tape:
+                # Predict using the model
+                predictions = self.model([initial_input, np.array([[0, 0]])], training=True)
+                
+                # Compute loss
+                loss = tf.keras.losses.binary_crossentropy(self.y_train_tensor, predictions)
+                loss = tf.reduce_mean(loss)
+            
+            # Compute gradients
+            grads = tape.gradient(loss, self.model.trainable_variables)
+            
+            # Update model weights
+            optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
+            
+            # Prepare the next input by appending the predictions and removing the first instance
+            # Concatenate predictions to the input
+            initial_input = np.concatenate([initial_input, predictions], axis=-1)  # Append predictions along the channel dimension
+            
+            # Remove the first "instance" (you might need to adjust this depending on your task)
+            # Here, we are assuming removing the oldest channel (1) slice
+            if initial_input.shape[-1] > 1:  # Ensure there is more than one channel before removing
+                initial_input = initial_input[..., 1:]  # Remove the first channel (shift the window)
+            
+            # Append predictions to history if needed
+            prediction_history.append(predictions.numpy())
+            
+            # Optionally print or log loss
+            print(f"Iteration {iteration+1}, Loss: {loss.numpy()}")
 
     def evaluate_model(self):
         """
@@ -324,6 +379,9 @@ class WeatherMLModel(WeatherData):
         features = self.X_test_tensor[seed:seed+1].numpy().reshape(1, self.X_test.shape[1], self.X_test.shape[2], self.X_test.shape[3])
         targets = self.y_test_tensor[seed:seed+1].numpy().reshape(1, self.y_test.shape[1], self.y_test.shape[2], self.y_test.shape[3])
         time_values = self.time_values
+
+        features = features * (self.max_value - self.min_value) + self.min_value
+        targets = targets * (self.max_value - self.min_value) + self.min_value
 
         fig, axs = plt.subplots(1, 2, figsize=(21, 7), subplot_kw={'projection': ccrs.PlateCarree()})
 
@@ -383,6 +441,9 @@ class WeatherMLModel(WeatherData):
 
         predictions = self.model.predict([features, forcings]).reshape(1, self.y_test.shape[1], self.y_test.shape[2], self.y_test.shape[3])
 
+        predictions = predictions * (self.max_value - self.min_value) + self.min_value
+        targets = targets * (self.max_value - self.min_value) + self.min_value
+
         error = targets - predictions
 
         fig, axs = plt.subplots(1, 3, figsize=(21, 7), subplot_kw={'projection': ccrs.PlateCarree()})
@@ -404,7 +465,7 @@ class WeatherMLModel(WeatherData):
 
         feat = axs[0].contourf(self.dataset.longitude, self.dataset.latitude, predictions[0,0], levels=levels, vmin=pmin, vmax = pmax, transform=ccrs.PlateCarree())
         tar = axs[1].contourf(self.dataset.longitude, self.dataset.latitude, targets[0,0], levels=levels, vmin=amin, vmax = amax, transform=ccrs.PlateCarree())
-        err = axs[2].contourf(self.dataset.longitude, self.dataset.latitude, error[0,0], levels=levels, vmin=emin, vmax = emax, transform=ccrs.PlateCarree())
+        err = axs[2].contourf(self.dataset.longitude, self.dataset.latitude, error[0,0], levels=levels, vmin=emin, vmax = emax, cmap = 'coolwarm', transform=ccrs.PlateCarree())
         axs[1].set_title('Target')
         axs[2].set_title('Error')
 
@@ -429,7 +490,7 @@ class WeatherMLModel(WeatherData):
                 ptm = axs[1].contourf(self.dataset.longitude, self.dataset.latitude, targets[0,i % self.steps], levels=levels, vmin=amin, vmax = amax)
                 axs[1].set_title(f'Target - {end_time.strftime("%Y-%m-%d %H:%M:%S")}')
 
-                err = axs[2].contourf(self.dataset.longitude, self.dataset.latitude, error[0,i % self.steps], levels=levels, vmin=error.min(), vmax = error.max())
+                err = axs[2].contourf(self.dataset.longitude, self.dataset.latitude, error[0,i % self.steps], levels=levels, vmin=error.min(), vmax = error.max(), cmap = 'coolwarm', transform=ccrs.PlateCarree())
                 axs[2].set_title(f'Error - {end_time.strftime("%Y-%m-%d %H:%M:%S")}')
             return pcm
 
@@ -443,4 +504,3 @@ class WeatherMLModel(WeatherData):
         plt.close(fig)
 
         return HTML(ani.to_jshtml())
-
