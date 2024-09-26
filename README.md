@@ -37,4 +37,7 @@ The project builds upon the following research:
 
 ## Implementations to be tested
 - **Land mass forcings**: Add a layer that identifies the land mass of South Africa
-- **Training for multiple steps**: In the training, increase the number of steps that the model is training. 
+- **Training for multiple steps**: In the training, increase the number of steps that the model is training.
+
+## Issues
+- **Computer crashing on PyTorch implementation**: Simulation computer with NVIDIA GeForce GPU crashing (temperature @ 73 \degrees C)
