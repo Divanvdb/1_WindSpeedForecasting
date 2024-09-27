@@ -41,3 +41,4 @@ The project builds upon the following research:
 
 ## Issues
 - **Computer crashing on PyTorch implementation**: Simulation computer with NVIDIA GeForce GPU crashing (temperature @ 73 \degrees C)
+- Autoregressive rollout training not yielding the best results for UNet PyTorch Implementation
