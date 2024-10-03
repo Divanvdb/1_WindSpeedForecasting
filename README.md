@@ -14,6 +14,9 @@ The project builds upon the following research:
 
 - **Graph Neural Networks**: 
   - [NeuralLAM](https://arxiv.org/abs/2309.17370) , [Keisler](https://arxiv.org/abs/2202.07575) , [GraphCast](https://arxiv.org/abs/2212.12794)
+ 
+- **Multi-Layer Perceptron**:
+  - Own implementation for benchmarking purposes 
 
 ## Data Description
 - **Source**: ERA5 wind speed data for South Africa (2018-2022).
