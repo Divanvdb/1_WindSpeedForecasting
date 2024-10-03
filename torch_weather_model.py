@@ -21,17 +21,53 @@ import torch.nn as nn
 from weather_data_class import WeatherData
 
 class TorchWeatherModel(WeatherData):
-    def __init__(self, ds: xr.Dataset, window_size: int = 24, steps: int = 3, use_forcings = False, intervals = 1):
-        super().__init__(dataset=ds, window_size=window_size, steps=steps, auto=True, use_forcings=use_forcings, intervals=intervals)
+    '''
+    A class for training and predicting weather data using PyTorch.
+    '''
 
+    def __init__(self, ds: xr.Dataset, window_size: int = 24, steps: int = 3, use_forcings: bool = False, intervals: int = 1):
+        """
+        Initialize the TorchWeatherModel.
+
+        Args:
+            ds (xr.Dataset): The xarray dataset containing weather data.
+            window_size (int): The size of the window for input data. Default is 24.
+            steps (int): Number of future steps to predict. Default is 3.
+            use_forcings (bool): Whether to use forcings such as time-based inputs (e.g., hour, month). Default is False.
+            intervals (int): Interval for processing the dataset. Default is 1.
+        """
+
+        super().__init__(dataset=ds, 
+                         window_size=window_size, 
+                         steps=steps, 
+                         auto=True, 
+                         use_forcings=use_forcings, 
+                         intervals=intervals)
+        
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
         print('Class setup done...')
 
-    def assign_model(self, model):
+    def assign_model(self, model: nn.Module) -> None:
+        """
+        Assign a model to the class instance.
+
+        Args:
+            model (nn.Module): A PyTorch model to assign for training and prediction.
+        """
         self.model = model
 
-    def train_single(self, epochs=10, save_path=None, patience=5, lr_=0.0001, batch_size_=128):
+    def train_single(self, epochs: int = 10, save_path: str = None, patience: int = 5, lr_: float = 0.0001, batch_size_: int = 128) -> None:
+        """
+        Train the model with a single-step training approach.
+
+        Args:
+            epochs (int): Number of training epochs. Default is 10.
+            save_path (str): Path to save the best model. Default is timestamp-based.
+            patience (int): Number of epochs to wait for improvement before stopping. Default is 5.
+            lr_ (float): Learning rate for the optimizer. Default is 0.0001.
+            batch_size_ (int): Batch size for DataLoader. Default is 128.
+        """
+
         if save_path is None:
             save_path = f'{datetime.now().month}_{datetime.now().day}_{datetime.now().hour}_{datetime.now().minute}.pth'
 
@@ -93,7 +129,20 @@ class TorchWeatherModel(WeatherData):
                 print('Early stopping triggered')
                 break
 
-    def train_multi(self, epochs=10, save_path=None, patience=5, lr_=0.0001, batch_size_=128, train_steps=3, load_weights = None):
+    def train_multi(self, epochs: int = 10, save_path: str = None, patience: int = 5, lr_: float = 0.0001, batch_size_: int = 128, train_steps: int = 3, load_weights: str = None) -> None:
+        """
+        Train the model with a multi-step autoregressive approach.
+
+        Args:
+            epochs (int): Number of training epochs. Default is 10.
+            save_path (str): Path to save the best model. Default is timestamp-based.
+            patience (int): Number of epochs to wait for improvement before stopping. Default is 5.
+            lr_ (float): Learning rate for the optimizer. Default is 0.0001.
+            batch_size_ (int): Batch size for DataLoader. Default is 128.
+            train_steps (int): Number of autoregressive steps during training. Default is 3.
+            load_weights (str): Path to pre-trained model weights. Default is None.
+        """
+        
         if save_path is None:
             save_path = f'{datetime.now().month}_{datetime.now().day}_{datetime.now().hour}_{datetime.now().minute}.pth'
 
@@ -136,7 +185,7 @@ class TorchWeatherModel(WeatherData):
                         outputs = self.model(current_input)
                     
                     # Calculate loss at each autoregressive step
-                    print('Step' , step)
+                    # print('Step' , step)
                     loss = criterion(outputs, y_batch[:, step].reshape(-1, 1, self.dataset.latitude.size, self.dataset.longitude.size))
                     cumulative_loss += loss  # Accumulate the loss
 
@@ -180,13 +229,31 @@ class TorchWeatherModel(WeatherData):
                 print('Early stopping triggered')
                 break
 
-    def init_weights(self, m):
+    def init_weights(self, m: nn.Module) -> None:
+        """
+        Initialize weights for the model.
+
+        Args:
+            m (nn.Module): Module whose weights will be initialized.
+        """
+
         if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
             nn.init.xavier_uniform_(m.weight)  # Xavier initialization for Conv and Linear layers
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)  # Initialize bias to 0
 
-    def predict(self, X, F):
+    def predict(self, X: torch.Tensor, F: torch.Tensor) -> np.ndarray:
+        """
+        Predict output based on input data.
+
+        Args:
+            X (torch.Tensor): Input data for prediction.
+            F (torch.Tensor): Forcings data, such as hour and month (if used).
+
+        Returns:
+            np.ndarray: Model predictions.
+        """
+
         self.model.eval()
         with torch.no_grad():
             X = torch.tensor(X).float()
@@ -196,7 +263,21 @@ class TorchWeatherModel(WeatherData):
             else:
                 return self.model(X).numpy() # , F
 
-    def autoregressive_predict(self, X, F, rollout_steps, unnormalize=True, verbose=False):
+    def autoregressive_predict(self, X: torch.Tensor, F: torch.Tensor, rollout_steps: int, unnormalize: bool = True, verbose: bool = False) -> np.ndarray:
+        """
+        Perform autoregressive predictions for multiple time steps.
+
+        Args:
+            X (torch.Tensor): Input data for prediction.
+            F (torch.Tensor): Forcings data, such as hour and month.
+            rollout_steps (int): Number of future steps to predict.
+            unnormalize (bool): Whether to unnormalize the predictions. Default is True.
+            verbose (bool): Whether to print intermediate shapes for debugging. Default is False.
+
+        Returns:
+            np.ndarray: Predictions for each time step.
+        """
+
         self.model.eval()
         with torch.no_grad():
             
@@ -244,15 +325,41 @@ class TorchWeatherModel(WeatherData):
             
             return predictions
         
-    def save_model(self, file_path):
+    def save_model(self, file_path: str) -> None:
+        """
+        Save the current model state to a file.
+
+        Args:
+            file_path (str): Path to save the model.
+        """
+
         torch.save(self.model.state_dict(), file_path)
 
-    def load_model(self, file_path):
+    def load_model(self, file_path: str) -> None:
+        """
+        Load a model from a file.
+
+        Args:
+            file_path (str): Path to load the model from.
+        """
+
         self.model.load_state_dict(torch.load(file_path, map_location=self.device, weights_only=True))
         self.model.to(self.device)
         self.model.eval()
 
-    def plot_pred_target(self, seed = 0, frame_rate=16, levels = 10):
+    def plot_pred_target(self, seed: int = 0, frame_rate: int = 16, levels: int = 10) -> HTML:
+        """
+        Plot the predictions and targets with animations.
+
+        Args:
+            seed (int): Seed to select the test data for plotting. Default is 0.
+            frame_rate (int): Frame rate for animation. Default is 16.
+            levels (int): Number of contour levels for plots. Default is 10.
+
+        Returns:
+            HTML: An HTML object containing the animation of predictions and targets.
+        """
+
         bounds = [self.dataset.longitude.min().item(), self.dataset.longitude.max().item(), self.dataset.latitude.min().item(), self.dataset.latitude.max().item()]
         targets = self.y_test[seed:seed+1]
         time_values = self.time_values
@@ -349,7 +456,14 @@ class TorchWeatherModel(WeatherData):
 
         return HTML(ani.to_jshtml())
 
-    def prediction_plots(self, seed = 0):
+    def prediction_plots(self, seed: int = 0) -> None:
+        """
+        Generate static plots for predictions and targets.
+
+        Args:
+            seed (int): Seed to select the test data for plotting. Default is 0.
+        """
+
         targets = self.y_test[seed:seed+1]
 
         predictions = self.autoregressive_predict(self.X_test_t[seed:seed+1], self.F_test_t[seed:seed+1], self.steps)
