@@ -54,7 +54,7 @@ class WeatherData(Dataset):
         F_test_t (torch.Tensor): Testing forcings as tensors.
     """
 
-    def __init__(self, dataset: xr.Dataset, window_size: int = 24, steps: int = 3, auto = False, use_forcings = False, intervals = 1):
+    def __init__(self, dataset: xr.Dataset, window_size: int = 24, steps: int = 3, auto: bool = False, use_forcings: bool = False, intervals: int = 1, data_split: str = 'train'):
 
         """
         Initializes the WeatherData object.
@@ -81,6 +81,13 @@ class WeatherData(Dataset):
 
         self.use_forcings = use_forcings
 
+        # MLP input size
+        self.input_size = self.window_size * self.dataset.latitude.size * self.dataset.longitude.size
+        self.forcing_size = 2  
+        self.output_size = 1 * self.dataset.latitude.size * self.dataset.longitude.size 
+
+        self.data_split = data_split
+
         if auto:
             if intervals > 1:
                 self.time_intervals(intervals)
@@ -88,31 +95,45 @@ class WeatherData(Dataset):
             self.split_data()    
             self.normalize_data()    
 
-    def __len__(self) -> int:
-
+    def __len__(self, ) -> int:
         """
-        Returns the length of the training dataset.
+        Returns the length of the dataset for the specified split.
+
+        Args:
+            data_split (str): The dataset split ('train', 'val', 'test'). Default is 'train'.
 
         Returns:
-            int: The number of samples in the training dataset.
+            int: The number of samples in the specified dataset split.
         """
+        if self.data_split == 'train':
+            return len(self.X_train)
+        elif self.data_split == 'val':
+            return len(self.X_val)
+        elif self.data_split == 'test':
+            return len(self.X_test)
+        else:
+            raise ValueError("data_split must be 'train', 'val', or 'test'")
 
-        return len(self.X_train)
-    
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-
         """
-        Retrieves a sample from the dataset.
+        Retrieves a sample from the specified dataset split.
 
         Args:
             idx (int): The index of the sample to retrieve.
+            data_split (str): The dataset split ('train', 'val', 'test'). Default is 'train'.
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: A tuple containing features, forcings, and target.
         """
+        if self.data_split == 'train':
+            return self.X_train_t[idx], self.F_train_t[idx], self.y_train_t[idx]
+        elif self.data_split == 'val':
+            return self.X_val_t[idx], self.F_val_t[idx], self.y_val_t[idx]
+        elif self.data_split == 'test':
+            return self.X_test_t[idx], self.F_test_t[idx], self.y_test_t[idx]
+        else:
+            raise ValueError("data_split must be 'train', 'val', or 'test'")
 
-        return self.X_train_t[idx], self.F_train_t[idx], self.y_train_t[idx]
-    
     def time_intervals(self, intervals: int = 3) -> None:
     
         """
@@ -207,53 +228,73 @@ class WeatherData(Dataset):
 
         print('Windowed...')
 
-    def split_data(self, test_size: float = 0.2, random_state: int = 42) -> None:
+    def split_data(self, test_size: float = 0.1, val_size: float = 0.2, random_state: int = 42) -> None:
         """
-        Splits the data into training and testing sets.
+        Splits the data into training, validation, and testing sets.
 
         Args:
             test_size (float): Proportion of the dataset to include in the test split. Default is 0.2.
+            val_size (float): Proportion of the dataset to include in the validation split from the training set. Default is 0.1.
             random_state (int): Random seed for reproducibility. Default is 42.
 
         Returns:
-            None: Updates the instance attributes with training and testing sets.
+            None: Updates the instance attributes with training, validation, and testing sets.
         """
-        """
-        Splits the data into training, validation, and test sets.
-        """
+        print('Splitting data...')
 
-        print('Splitting...')
-        self.X_train, self.X_test, self.y_train, self.y_test, self.F_train, self.F_test, self.T_train, self.T_test = train_test_split(
+        # First, split into training and temp (validation + test)
+        X_train, X_temp, y_train, y_temp, F_train, F_temp, T_train, T_temp = train_test_split(
             self.features, self.targets, self.forcings, self.time_values,
-            test_size= test_size)
-     
-        print('Shuffling...')
-        
+            test_size=test_size + val_size, random_state=random_state
+        )
+
+        # Next, split temp into validation and test
+        val_test_ratio = val_size / (val_size + test_size)
+        self.X_val, self.X_test, self.y_val, self.y_test, self.F_val, self.F_test, self.T_val, self.T_test = train_test_split(
+            X_temp, y_temp, F_temp, T_temp,
+            test_size=val_test_ratio, random_state=random_state
+        )
+
+        self.X_train = X_train
+        self.y_train = y_train
+        self.F_train = F_train
+        self.T_train = T_train
+
+        print('Shuffling training data...')
         self.X_train, self.y_train, self.F_train, self.T_train = shuffle(self.X_train, self.y_train, self.F_train, self.T_train, random_state=random_state)
 
     def normalize_data(self) -> None:
         """
-        Normalizes the training and testing data using mean and standard deviation.
+        Normalizes the training, validation, and testing data using mean and standard deviation.
 
         Returns:
             None: Updates the instance attributes with normalized data as tensors.
         """
-
-        # Normalize the data with standard deviation
+        # Normalize training data
         self.X_train_t = (self.X_train - self.mean_value) / self.std_value
         self.y_train_t = (self.y_train - self.mean_value) / self.std_value
 
+        # Normalize validation data
+        self.X_val_t = (self.X_val - self.mean_value) / self.std_value
+        self.y_val_t = (self.y_val - self.mean_value) / self.std_value
+
+        # Normalize test data
         self.X_test_t = (self.X_test - self.mean_value) / self.std_value
         self.y_test_t = (self.y_test - self.mean_value) / self.std_value
 
-        # To tensors
+        # Convert to tensors
         self.X_train_t = torch.tensor(self.X_train_t).float()
         self.y_train_t = torch.tensor(self.y_train_t).float()
-        
+
+        self.X_val_t = torch.tensor(self.X_val_t).float()
+        self.y_val_t = torch.tensor(self.y_val_t).float()
+
         self.X_test_t = torch.tensor(self.X_test_t).float()
         self.y_test_t = torch.tensor(self.y_test_t).float()
 
+        # Convert forcings to tensors
         self.F_train_t = torch.tensor(self.F_train).float()
+        self.F_val_t = torch.tensor(self.F_val).float()
         self.F_test_t = torch.tensor(self.F_test).float()
 
     def plot_from_ds(self, seed: int = 0, frame_rate: int = 16, levels: int = 10) -> HTML:
@@ -390,3 +431,4 @@ class WeatherData(Dataset):
         plt.close(fig)
 
         return HTML(ani.to_jshtml())
+

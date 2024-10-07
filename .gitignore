@@ -6,3 +6,5 @@
 /References
 *.pth
 /Dev_Files
+/lightning_logs
+/checkpoints
