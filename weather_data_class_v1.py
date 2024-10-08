@@ -89,11 +89,14 @@ class WeatherData(Dataset):
 
         if intervals > 1:
                 self.time_intervals(intervals)
+                print('Time intervals applied')
                 
 
         if auto:
             self.split_data()    
+            print('Data split')
             self.normalize_data()    
+            print('Data normalized')
 
     def __len__(self) -> int:
         """
