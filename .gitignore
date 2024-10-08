@@ -4,7 +4,6 @@
 /data
 /data_850
 /References
-*.pth
 /Dev_Files
 /lightning_logs
 /checkpoints

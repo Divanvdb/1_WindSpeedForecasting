@@ -322,3 +322,206 @@ class WeatherData(Dataset):
         print('self.F_train_t:', self.F_train_t.shape, 'self.F_val_t:', self.F_val_t.shape, 'self.F_test_t:', self.F_test_t.shape)
 
         print('self.input_size:', self.input_size, 'self.forcing_size:', self.forcing_size, 'self.output_size:', self.output_size)
+
+    def assign_model(self, model: nn.Module) -> None:
+        """
+        Assign a model to the class instance.
+
+        Args:
+            model (nn.Module): A PyTorch model to assign for training and prediction.
+        """
+        self.model = model
+
+    def load_model(self, file_path: str) -> None:
+        """
+        Load a model from a file.
+
+        Args:
+            file_path (str): Path to load the model from.
+        """
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        self.model.load_state_dict(torch.load(file_path, map_location=self.device, weights_only=True))
+        self.model.to(self.device)
+        self.model.eval()
+
+    def predict(self, X: torch.Tensor, F: torch.Tensor) -> np.ndarray:
+        """
+        Predict output based on input data.
+
+        Args:
+            X (torch.Tensor): Input data for prediction.
+            F (torch.Tensor): Forcings data, such as hour and month (if used).
+
+        Returns:
+            np.ndarray: Model predictions.
+        """
+
+        self.model.eval()
+        with torch.no_grad():
+            X = torch.tensor(X).float()
+            F = torch.tensor(F).float()
+            if self.use_forcings:
+                return self.model(X, F).numpy()
+            else:
+                return self.model(X).numpy()
+
+    def autoregressive_predict(self, X: torch.Tensor, F: torch.Tensor, rollout_steps: int, unnormalize: bool = True, verbose: bool = False) -> np.ndarray:
+        """
+        Perform autoregressive predictions for multiple time steps.
+
+        Args:
+            X (torch.Tensor): Input data for prediction.
+            F (torch.Tensor): Forcings data, such as hour and month.
+            rollout_steps (int): Number of future steps to predict.
+            unnormalize (bool): Whether to unnormalize the predictions. Default is True.
+            verbose (bool): Whether to print intermediate shapes for debugging. Default is False.
+
+        Returns:
+            np.ndarray: Predictions for each time step.
+        """
+
+        self.model.eval()
+        with torch.no_grad():
+            
+            # X = torch.tensor(X).float()
+            F = torch.tensor(F).float()
+            
+            predictions = []
+
+            current_input = X#.to(self.device)
+            current_F = F#.to(self.device)
+            
+            for step in range(rollout_steps):
+                
+                if self.use_forcings:
+                    next_pred = self.model(current_input, current_F).cpu().numpy()
+                else:
+                    try:
+                        next_pred = self.model(current_input).cpu().numpy()
+                    except:
+                        next_pred = self.model(current_input).numpy()
+                
+                predictions.append(next_pred)
+                
+                next_pred_tensor = torch.tensor(next_pred).float()#.to(self.device) 
+
+                if verbose:
+                    print(current_input.shape, next_pred_tensor.shape)
+
+                current_input = torch.cat((current_input[:, 1:], next_pred_tensor), dim=1)#.to(self.device)
+
+                hour = current_F[0, 0].item()  # Extract the hour
+                month = current_F[0, 1].item()  # Extract the month
+                
+                hour += 1
+                if hour == 24:
+                    hour = 0
+                
+                current_F = torch.tensor([[hour, month]]).float()#.to(self.device)
+
+            predictions = np.array(predictions).reshape(rollout_steps, self.dataset.sizes['latitude'], self.dataset.sizes['longitude'])
+
+            # Unnromalize the predictions
+            if unnormalize:
+                predictions = predictions * self.std_value + self.mean_value
+            
+            return predictions
+        
+    def plot_pred_target(self, seed: int = 0, frame_rate: int = 16, levels: int = 10) -> HTML:
+        """
+        Plot the predictions and targets with animations.
+
+        Args:
+            seed (int): Seed to select the test data for plotting. Default is 0.
+            frame_rate (int): Frame rate for animation. Default is 16.
+            levels (int): Number of contour levels for plots. Default is 10.
+
+        Returns:
+            HTML: An HTML object containing the animation of predictions and targets.
+        """
+
+        bounds = [self.dataset.longitude.min().item(), self.dataset.longitude.max().item(), self.dataset.latitude.min().item(), self.dataset.latitude.max().item()]
+        targets = self.X_test[seed + self.window_size:seed + self.window_size + self.steps]
+        time_values = self.T_test[seed + self.window_size:seed + self.window_size + self.steps]
+
+        time_values = pd.to_datetime(time_values)
+
+        predictions = self.autoregressive_predict(self.X_test_t[seed:seed + self.window_size].unsqueeze(0), self.F_test_t[seed + self.window_size].unsqueeze(0), self.steps)
+
+        fig, axs = plt.subplots(2, 3, figsize=(21, 7), subplot_kw={'projection': ccrs.PlateCarree()})
+
+        vmin = min(predictions.min().item(), targets.min().item())
+        vmax = max(predictions.max().item(), targets.max().item())
+
+        fig.subplots_adjust(left=0.05, right=0.95, bottom=0.1, top=0.9, wspace=0.2)
+
+        for ax in axs.flatten()[:-1]:
+            ax.set_extent(bounds, crs=ccrs.PlateCarree())
+            ax.coastlines()
+
+        ax_last = fig.add_subplot(2, 3, 6)
+
+        pred = axs[0, 0].contourf(self.dataset.longitude, self.dataset.latitude, predictions[0], levels=levels, vmin=vmin, vmax = vmax, transform=ccrs.PlateCarree())
+        tar = axs[0, 1].contourf(self.dataset.longitude, self.dataset.latitude, targets[0], levels=levels, vmin=vmin, vmax = vmax, transform=ccrs.PlateCarree())
+
+        error = (predictions[0] - targets[0,0].squeeze()) 
+
+        err = axs[0, 2].contourf(self.dataset.longitude, self.dataset.latitude, error.squeeze(), levels=levels, transform=ccrs.PlateCarree(), cmap='coolwarm')
+
+        perc_error = error / targets[0,0].squeeze() * 100
+        perc_error = np.clip(perc_error, -100, 100)
+        rmse = np.sqrt(error**2)
+
+        perr = axs[1, 0].contourf(self.dataset.longitude, self.dataset.latitude, perc_error, levels=levels, transform=ccrs.PlateCarree(), cmap='coolwarm')
+        rms = axs[1, 1].contourf(self.dataset.longitude, self.dataset.latitude, rmse, levels=levels, transform=ccrs.PlateCarree(), cmap='coolwarm')
+        ax_last.scatter(targets[0].flatten(), predictions[0].flatten(), c=error, cmap='coolwarm')
+
+        fig.colorbar(pred, ax=axs[0, 0], orientation='vertical', label='Wind Speed (m/s)')
+        fig.colorbar(tar, ax=axs[0, 1], orientation='vertical', label='Wind Speed (m/s)')
+        fig.colorbar(err, ax=axs[0, 2], orientation='vertical', label='Percentage Error (%)')
+        fig.colorbar(perr, ax=axs[1, 0], orientation='vertical', label='Percentage Error (%)')
+        fig.colorbar(rms, ax=axs[1, 1], orientation='vertical', label='Root Mean Squared Error (m/s)')
+
+        ax_last.set_xlabel("Observed Wind Speed (m/s)")
+        ax_last.set_ylabel("Forecasted Wind Speed (m/s)")
+
+        def animate(i):
+            for ax in axs.flatten()[:-1]:
+                ax.clear()
+                ax.coastlines()
+            
+            ax_last.clear()
+            ax_last.set_xlabel("Observed Wind Speed (m/s)")
+            ax_last.set_ylabel("Forecasted Wind Speed (m/s)")
+
+            axs[0, 0].contourf(self.dataset.longitude, self.dataset.latitude, predictions[i], levels=levels, vmin=vmin, vmax = vmax)
+            axs[0, 1].contourf(self.dataset.longitude, self.dataset.latitude, targets[i], levels=levels, vmin=vmin, vmax = vmax)
+            
+            error =  (predictions[i] - targets[i].squeeze())
+            axs[0, 2].contourf(self.dataset.longitude, self.dataset.latitude, error, levels=levels, transform=ccrs.PlateCarree(), cmap='coolwarm')
+            
+            perc_error = error / targets[i % self.steps].squeeze() * 100
+            perc_error = np.clip(perc_error, -100, 100)
+            rmse = np.sqrt(error**2)
+
+            axs[1, 0].contourf(self.dataset.longitude, self.dataset.latitude, perc_error, levels=levels, transform=ccrs.PlateCarree(), cmap='coolwarm')
+            axs[1, 1].contourf(self.dataset.longitude, self.dataset.latitude, rmse, levels=levels, transform=ccrs.PlateCarree(), cmap='coolwarm')
+            ax_last.scatter(targets[i].flatten(), predictions[i].flatten(), c=error, cmap='coolwarm')
+
+            axs[0, 0].set_title(f'Prediction {i} - {time_values[i].strftime("%Y-%m-%d %H:%M:%S")}')  
+            axs[0, 1].set_title(f'Target - {time_values[i].strftime("%Y-%m-%d %H:%M:%S")}')
+            axs[0, 2].set_title(f'Error - {time_values[i].strftime("%Y-%m-%d %H:%M:%S")}')
+            axs[1, 0].set_title(f'Percentage Error - {time_values[i].strftime("%Y-%m-%d %H:%M:%S")}')
+            axs[1, 1].set_title(f'Root Mean Squared Error - {time_values[i].strftime("%Y-%m-%d %H:%M:%S")}')
+            ax_last.set_title(f'Error Scatter Plot - {time_values[i].strftime("%Y-%m-%d %H:%M:%S")}')
+
+        frames = predictions.shape[0]
+
+        interval = 1000 / frame_rate
+
+        ani = FuncAnimation(fig, animate, frames=frames, interval=interval)
+
+        plt.close(fig)
+
+        return HTML(ani.to_jshtml())
