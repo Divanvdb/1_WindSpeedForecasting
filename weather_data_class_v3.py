@@ -1,4 +1,3 @@
-
 import xarray as xr
 import numpy as np
 import pandas as pd
@@ -67,7 +66,7 @@ class WeatherData(Dataset):
         self.dataset = dataset
         self.window_size = window_size
         self.steps = steps
-        self.calculate_wind_speed()
+        # self.calculate_wind_speed()
         self.dataset = self.dataset.sortby('latitude')
 
         self.min_value = self.dataset.wspd.min().item()
@@ -87,9 +86,11 @@ class WeatherData(Dataset):
 
         self.data_split = data_split
 
-        if intervals > 1:
-                self.time_intervals(intervals)
-                print('Time intervals applied')
+        self.intervals = intervals
+
+        # if intervals > 1:
+        #         self.time_intervals(intervals)
+        #         print('Time intervals applied')
                 
 
         if auto:
@@ -106,6 +107,7 @@ class WeatherData(Dataset):
         Returns:
             int: The number of valid windows that can fit into the specified dataset split.
         """
+
         if self.data_split == 'train':
             dataset_length = len(self.X_train)
         elif self.data_split == 'val':
@@ -115,11 +117,10 @@ class WeatherData(Dataset):
         else:
             raise ValueError("data_split must be 'train', 'val', or 'test'")
         
-        # Calculate how many windows of size `window_size + steps` fit into the dataset
-        total_window_size = self.window_size + self.steps
-        num_windows = dataset_length - total_window_size + 1  # Ensure correct fit
+        total_window_size = (self.window_size + self.steps)  * self.intervals
+        num_windows = dataset_length - total_window_size + self.intervals  
         
-        return max(0, num_windows)  # Ensure the result is not negative
+        return max(0, num_windows)  
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -132,28 +133,24 @@ class WeatherData(Dataset):
         Returns:
             Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: A tuple containing features, forcings, and target.
         """
+
         if self.data_split == 'train':
-            return self.X_train_t[idx:idx+self.window_size], self.F_train_t[idx + self.window_size], self.X_train_t[idx + self.window_size:idx + self.window_size + self.steps]
+            x = self.X_train_t[idx:idx + self.window_size * self.intervals:self.intervals]
+            F = self.F_train_t[idx + self.window_size * self.intervals]
+            y = self.X_train_t[idx + self.window_size * self.intervals:idx + (self.window_size + self.steps) * self.intervals: self.intervals] 
+            return x, F, y
         elif self.data_split == 'val':
-            return self.X_val_t[idx:idx+self.window_size], self.F_val_t[idx + self.window_size], self.X_val_t[idx + self.window_size:idx + self.window_size + self.steps]
+            x = self.X_val_t[idx:idx + self.window_size * self.intervals:self.intervals]
+            F = self.F_val_t[idx + self.window_size * self.intervals]
+            y = self.X_val_t[idx + self.window_size * self.intervals:idx + (self.window_size + self.steps) * self.intervals: self.intervals] 
+            return x, F, y
         elif self.data_split == 'test':
-            return self.X_test_t[idx:idx+self.window_size], self.F_test_t[idx + self.window_size], self.X_test_t[idx + self.window_size:idx + self.window_size + self.steps]
+            x = self.X_test_t[idx:idx + self.window_size * self.intervals:self.intervals]
+            F = self.F_test_t[idx + self.window_size * self.intervals]
+            y = self.X_test_t[idx + self.window_size * self.intervals:idx + (self.window_size + self.steps) * self.intervals: self.intervals] 
+            return x, F, y
         else:
             raise ValueError("data_split must be 'train', 'val', or 'test'")
-
-    def time_intervals(self, intervals: int = 3) -> None:
-    
-        """
-        Subsets the dataset based on the specified time intervals. Only happens once and then dataset is saved as a .nc file.
-
-        Args:
-            intervals (int): The time intervals for subsetting. Default is 3.
-
-        Returns:
-            None: Updates the dataset in place.
-        """
-
-        self.dataset = self.dataset.sel(time=slice(None, None, intervals))
 
     def subset_data(self, coarsen: int = 1) -> None:
 
@@ -267,10 +264,12 @@ class WeatherData(Dataset):
             HTML: An HTML object representing the animation.
         """
         bounds = [self.dataset.longitude.min().item(), self.dataset.longitude.max().item(), self.dataset.latitude.min().item(), self.dataset.latitude.max().item()]
-        features = self.X_test[seed:seed + self.window_size]
-        targets = self.X_test[seed + self.window_size:seed + self.window_size + self.steps]
-        time_features = self.T_test[seed:seed + self.window_size]
-        time_targets = self.T_test[seed + self.window_size:seed + self.window_size + self.steps]
+
+        features = self.X_test[seed:seed + self.window_size * self.intervals:self.intervals]
+        targets = self.X_test[seed + self.window_size * self.intervals:seed + (self.window_size + self.steps) * self.intervals: self.intervals]
+        
+        time_features = self.T_test[seed:seed + self.window_size * self.intervals:self.intervals]
+        time_targets = self.T_test[seed + self.window_size * self.intervals:seed + (self.window_size + self.steps) * self.intervals: self.intervals]
 
         time_features = pd.to_datetime(time_features)
         time_targets = pd.to_datetime(time_targets)
@@ -445,12 +444,12 @@ class WeatherData(Dataset):
         """
 
         bounds = [self.dataset.longitude.min().item(), self.dataset.longitude.max().item(), self.dataset.latitude.min().item(), self.dataset.latitude.max().item()]
-        targets = self.X_test[seed + self.window_size:seed + self.window_size + self.steps]
-        time_values = self.T_test[seed + self.window_size:seed + self.window_size + self.steps]
+        targets = self.X_test[seed + self.window_size * self.intervals:seed + (self.window_size + self.steps) * self.intervals: self.intervals]
+        time_values = self.T_test[seed + self.window_size * self.intervals:seed + (self.window_size + self.steps) * self.intervals: self.intervals]
 
         time_values = pd.to_datetime(time_values)
 
-        predictions = self.autoregressive_predict(self.X_test_t[seed:seed + self.window_size].unsqueeze(0), self.F_test_t[seed + self.window_size].unsqueeze(0), self.steps)
+        predictions = self.autoregressive_predict(self.X_test_t[seed:seed + self.window_size * self.intervals:self.intervals].unsqueeze(0), self.F_test_t[seed + self.window_size * self.intervals].unsqueeze(0), self.steps)
 
         fig, axs = plt.subplots(2, 3, figsize=(21, 7), subplot_kw={'projection': ccrs.PlateCarree()})
 
