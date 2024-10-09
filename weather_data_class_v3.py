@@ -66,7 +66,7 @@ class WeatherData(Dataset):
         self.dataset = dataset
         self.window_size = window_size
         self.steps = steps
-        # self.calculate_wind_speed()
+        self.calculate_wind_speed()
         self.dataset = self.dataset.sortby('latitude')
 
         self.min_value = self.dataset.wspd.min().item()
